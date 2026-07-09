@@ -1,0 +1,333 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AutoPrime – Prisma Schema
+// Stack: PostgreSQL + Prisma ORM
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTH
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String   // bcrypt hashed
+  role      Role     @default(ADMIN)
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  SUPER_ADMIN
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tabela de tentativas de login para rate limiting/brute-force mitigation.
+// Cada linha registra (key, count, windowStart) — limpa por TTL admin job.
+// ─────────────────────────────────────────────────────────────────────────────
+model LoginAttempt {
+  id          String   @id @default(cuid())
+  key         String   @unique // ip+email normalizado
+  count       Int      @default(1)
+  lockedUntil DateTime? // null = não bloqueado
+  windowStart DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("login_attempts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BRAND & MODEL CATALOG
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Brand {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  slug      String     @unique
+  logoUrl   String?
+  active    Boolean    @default(true)
+  models    CarModel[]
+  vehicles  Vehicle[]
+  createdAt DateTime   @default(now())
+
+  @@map("brands")
+}
+
+model CarModel {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String
+  brand     Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  brandId   String
+  active    Boolean   @default(true)
+  vehicles  Vehicle[]
+  createdAt DateTime  @default(now())
+
+  @@unique([brandId, slug])
+  @@map("car_models")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VEHICLE
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Vehicle {
+  id          String           @id @default(cuid())
+  title       String           // Ex: "Honda Civic EXL 2022"
+  slug        String           @unique
+
+  // Pricing
+  price       Decimal          @db.Decimal(12, 2)
+  oldPrice    Decimal?         @db.Decimal(12, 2) // Preço anterior (riscado)
+
+  // Identification
+  yearMfr     Int              // Ano de fabricação
+  yearModel   Int              // Ano do modelo
+  mileage     Int              // Quilometragem (km)
+  color       String
+  doors       Int              @default(4)
+
+  // Classification
+  fuel         FuelType
+  transmission TransmissionType
+  bodyType     BodyType
+
+  // Rich content
+  description  String?         @db.Text
+  highlights   String[]        // Destaques rápidos (array de strings)
+
+  // Internal/hidden fields
+  chassis      String?
+  plate        String?
+  internalNotes String?        @db.Text
+
+  // Status & visibility
+  status       VehicleStatus   @default(AVAILABLE)
+  featured     Boolean         @default(false)
+  views        Int             @default(0)
+  soldAt       DateTime?       // preenchido quando status muda para SOLD
+
+  // Relations
+  brand        Brand           @relation(fields: [brandId], references: [id])
+  brandId      String
+  model        CarModel        @relation(fields: [modelId], references: [id])
+  modelId      String
+  images       VehicleImage[]
+  features     VehicleFeature[]
+  leads        Lead[]
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([status, featured])
+  @@index([brandId])
+  @@index([modelId])
+  @@index([price])
+  @@index([yearModel])
+  @@map("vehicles")
+}
+
+enum FuelType {
+  FLEX
+  GASOLINE
+  DIESEL
+  ELECTRIC
+  HYBRID
+  GNV
+}
+
+enum TransmissionType {
+  MANUAL
+  AUTOMATIC
+  CVT
+  SEMI_AUTOMATIC
+}
+
+enum BodyType {
+  SEDAN
+  HATCH
+  SUV
+  PICKUP
+  COUPE
+  CONVERTIBLE
+  MINIVAN
+  WAGON
+  CROSSOVER
+}
+
+enum VehicleStatus {
+  AVAILABLE  // Disponível
+  RESERVED   // Reservado
+  SOLD       // Vendido
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VEHICLE IMAGES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model VehicleImage {
+  id         String   @id @default(cuid())
+  url        String
+  publicId   String?  // Cloudinary/S3 public ID
+  alt        String?
+  width      Int?
+  height     Int?
+  order      Int      @default(0)   // Sort order for gallery
+  isCover    Boolean  @default(false)
+
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  vehicleId  String
+
+  createdAt  DateTime @default(now())
+
+  @@index([vehicleId, order])
+  @@map("vehicle_images")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FEATURES / OPCIONAIS (M:N com Vehicle)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Feature {
+  id        String           @id @default(cuid())
+  name      String           @unique
+  slug      String           @unique
+  category  FeatureCategory
+  icon      String?          // Emoji or icon name
+  vehicles  VehicleFeature[]
+
+  @@map("features")
+}
+
+enum FeatureCategory {
+  COMFORT      // Conforto
+  SAFETY       // Segurança
+  TECHNOLOGY   // Tecnologia
+  PERFORMANCE  // Performance
+  EXTERIOR     // Exterior
+  INTERIOR     // Interior
+  CONVENIENCE  // Conveniência
+}
+
+model VehicleFeature {
+  vehicle    Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  vehicleId  String
+  feature    Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  featureId  String
+
+  @@id([vehicleId, featureId])
+  @@map("vehicle_features")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STORES (unidades físicas)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Store {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  address   String
+  city      String
+  phone     String
+  email     String
+  hours     String
+  image     String
+  order     Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@map("stores")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEADS (CRM mínimo)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Lead {
+  id         String      @id @default(cuid())
+  name       String
+  whatsapp   String
+  email      String?
+  message    String?     @db.Text
+  proposal   Decimal?    @db.Decimal(12, 2) // Proposta do cliente
+  origin     LeadOrigin  @default(WEBSITE)
+  status     LeadStatus  @default(NEW)
+
+  vehicle    Vehicle?    @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  vehicleId  String?
+
+  // UTM tracking
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([status])
+  @@index([vehicleId])
+  @@map("leads")
+}
+
+enum LeadOrigin {
+  WEBSITE
+  WHATSAPP
+  PHONE
+  IN_PERSON
+  SOCIAL_MEDIA
+  LOCAL
+}
+
+enum LeadStatus {
+  NEW          // Novo
+  CONTACTED    // Contatado
+  NEGOTIATING  // Negociando
+  WON          // Ganho (vendeu)
+  LOST         // Perdido
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BANNER (carousel da homepage)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Banner {
+  id        String   @id @default(cuid())
+  title     String
+  subtitle  String?
+  imageUrl  String
+  linkUrl   String?
+  linkText  String?  @default("Saiba mais")
+  order     Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("banners")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SETTINGS (configurações dinâmicas da empresa — chave/valor)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}

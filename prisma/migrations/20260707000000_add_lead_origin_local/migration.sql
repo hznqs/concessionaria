@@ -1,0 +1,2 @@
+-- AddValue
+ALTER TYPE "LeadOrigin" ADD VALUE IF NOT EXISTS 'LOCAL';
